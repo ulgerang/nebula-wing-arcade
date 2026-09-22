@@ -60,6 +60,7 @@ export interface Enemy {
   formationIndex: number;
   formationName: WaveDefinition['formation'];
   divePattern: DivePattern;
+  entryDelay: number;
   diveElapsed: number;
   diveDuration: number;
   diveStartX: number;
