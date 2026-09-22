@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#050817" />
+    <meta name="description" content="Nebula Wing - a compact browser arcade shooter" />
+    <title>Nebula Wing</title>
+  </head>
+  <body>
+    <main id="app" class="app-shell">
+      <section class="game-frame" aria-label="Nebula Wing 게임 영역">
+        <canvas id="game-canvas" tabindex="0" role="application" aria-label="Nebula Wing 게임 캔버스"></canvas>
+        <div id="screen-overlay" class="screen-overlay" aria-live="polite"></div>
+      </section>
+      <p id="live-status" class="sr-only" aria-live="polite"></p>
+      <p class="orientation-note">가로 화면에서 플레이해 주세요.</p>
+    </main>
+    <noscript>
+      <div class="noscript-message">이 게임은 JavaScript가 필요합니다. 브라우저 설정에서 JavaScript를 활성화해 주세요.</div>
+    </noscript>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
