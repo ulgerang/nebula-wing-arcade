@@ -1,4 +1,4 @@
-export type GameStateName = 'Loading' | 'Title' | 'Playing' | 'Paused' | 'Bonus' | 'GameOver' | 'Result';
+export type GameStateName = 'Loading' | 'Title' | 'Playing' | 'Paused' | 'Settings' | 'Bonus' | 'GameOver' | 'Result';
 
 export type EnemyType = 'scout' | 'hunter' | 'bruiser' | 'carrier' | 'bonusDrone';
 
@@ -110,7 +110,11 @@ export interface GameSnapshot {
   comboMultiplier: number;
   highScore: number;
   highScores: HighScoreEntry[];
+  settings: Settings;
   qualifiesForHighScore: boolean;
+  highScoreSaved: boolean;
+  stageClearAvailable: boolean;
+  bonusPlayed: boolean;
   lastRunScore: number;
   lastRunStage: number;
 }

@@ -1,0 +1,46 @@
+{
+  "name": "combat_vfx_sheet",
+  "file": "../sprites/vfx/combat_vfx_sheet.png",
+  "sourceFile": "../source/combat_vfx_sheet_raw.png",
+  "format": "png",
+  "transparent": true,
+  "grid": {
+    "columns": 4,
+    "rows": 4,
+    "frameCount": 16,
+    "frameWidth": 320,
+    "frameHeight": 320,
+    "sheetWidth": 1280,
+    "sheetHeight": 1280,
+    "indexOrder": "row-major"
+  },
+  "rows": [
+    {
+      "name": "standard_hit",
+      "frameIndices": [0, 1, 2, 3],
+      "description": "Compact enemy hit spark, quiet-to-dissipating."
+    },
+    {
+      "name": "strong_defeat",
+      "frameIndices": [4, 5, 6, 7],
+      "description": "Large gold/coral defeat burst for bruiser or carrier."
+    },
+    {
+      "name": "player_damage",
+      "frameIndices": [8, 9, 10, 11],
+      "description": "Danger-red player damage burst."
+    },
+    {
+      "name": "combo_ring",
+      "frameIndices": [12, 13, 14, 15],
+      "description": "Cyan/mint energy ring with gold score sparks."
+    }
+  ],
+  "anchor": "cell center",
+  "recommendedDisplaySizes": {
+    "standard_hit": "32x32 logical pixels",
+    "strong_defeat": "72x72 logical pixels",
+    "player_damage": "64x64 logical pixels",
+    "combo_ring": "80x80 logical pixels"
+  }
+}

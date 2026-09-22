@@ -32,7 +32,9 @@ export class InputManager {
   private attach(): void {
     const keydown = (event: KeyboardEvent) => {
       const key = normalizeKey(event.key);
-      if (PREVENT_DEFAULT_KEYS.has(key)) event.preventDefault();
+      const source = event.target instanceof HTMLElement ? event.target : null;
+      const isEditable = source?.matches('input, textarea, select, [contenteditable="true"]') ?? false;
+      if (!isEditable && PREVENT_DEFAULT_KEYS.has(key)) event.preventDefault();
       const wasDown = this.down.has(key);
       this.down.add(key);
       if (!wasDown) {
@@ -40,7 +42,7 @@ export class InputManager {
           if (keys.includes(key)) this.pressedAt.set(action, performance.now());
         }
       }
-      this.target.focus({ preventScroll: true });
+      if (!isEditable) this.target.focus({ preventScroll: true });
     };
     const keyup = (event: KeyboardEvent) => {
       const key = normalizeKey(event.key);
@@ -86,8 +88,10 @@ export class InputManager {
 
   horizontalAxis(): number {
     let axis = 0;
-    if (this.isDown('left')) axis -= 1;
-    if (this.isDown('right')) axis += 1;
+    const bufferedLeft = this.consume('left');
+    const bufferedRight = this.consume('right');
+    if (this.isDown('left') || bufferedLeft) axis -= 1;
+    if (this.isDown('right') || bufferedRight) axis += 1;
     if (this.gamepadConnected) {
       const pad = Array.from(navigator.getGamepads?.() ?? []).find((candidate) => candidate?.connected);
       if (pad) {

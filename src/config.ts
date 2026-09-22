@@ -1,4 +1,5 @@
 import type { EnemyType, SaveData, Settings, WaveDefinition } from './types';
+import waveData from '../data/waves.json';
 
 export const LOGICAL_WIDTH = 960;
 export const LOGICAL_HEIGHT = 540;
@@ -52,59 +53,4 @@ export const DEFAULT_SAVE: SaveData = {
   settings: DEFAULT_SETTINGS
 };
 
-export const WAVES: WaveDefinition[] = [
-  {
-    stage: 1,
-    wave: 1,
-    formation: 'V_SHAPE',
-    enemies: [{ type: 'scout', count: 8, spawnDelay: 0.18 }],
-    attackPattern: 'SWOOP',
-    clearBonus: 500
-  },
-  {
-    stage: 1,
-    wave: 2,
-    formation: 'V_SHAPE',
-    enemies: [
-      { type: 'scout', count: 6, spawnDelay: 0.16 },
-      { type: 'hunter', count: 2, spawnDelay: 0.28 }
-    ],
-    attackPattern: 'DIAGONAL',
-    clearBonus: 700
-  },
-  {
-    stage: 1,
-    wave: 3,
-    formation: 'GRID',
-    enemies: [
-      { type: 'scout', count: 6, spawnDelay: 0.14 },
-      { type: 'hunter', count: 3, spawnDelay: 0.22 },
-      { type: 'bruiser', count: 1, spawnDelay: 0.42 }
-    ],
-    attackPattern: 'SWOOP',
-    clearBonus: 900
-  },
-  {
-    stage: 1,
-    wave: 4,
-    formation: 'DIAMOND',
-    enemies: [
-      { type: 'hunter', count: 5, spawnDelay: 0.2 },
-      { type: 'bruiser', count: 2, spawnDelay: 0.36 }
-    ],
-    attackPattern: 'DIAGONAL',
-    clearBonus: 1_200
-  },
-  {
-    stage: 1,
-    wave: 5,
-    formation: 'GRID',
-    enemies: [
-      { type: 'scout', count: 5, spawnDelay: 0.12 },
-      { type: 'hunter', count: 4, spawnDelay: 0.2 },
-      { type: 'bruiser', count: 2, spawnDelay: 0.34 }
-    ],
-    attackPattern: 'DIAGONAL',
-    clearBonus: 2_000
-  }
-];
+export const WAVES: WaveDefinition[] = waveData as WaveDefinition[];
