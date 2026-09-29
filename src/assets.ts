@@ -57,7 +57,7 @@ function loadImage(url: string): Promise<HTMLImageElement> {
     const timeout = window.setTimeout(() => {
       image.src = '';
       reject(new Error(`Asset load timed out: ${url}`));
-    }, 5_000);
+    }, 10_000);
     image.onload = () => {
       window.clearTimeout(timeout);
       resolve(image);
@@ -86,18 +86,19 @@ export class AssetLoader {
 
   private async loadUncached(onProgress: (progress: number, message: string) => void): Promise<AssetLoadResult> {
     const failed: SpriteSheetKey[] = [];
-    for (let index = 0; index < SHEET_ENTRIES.length; index += 1) {
-      const entry = SHEET_ENTRIES[index];
-      if (!entry) continue;
+    let completed = 0;
+    await Promise.all(SHEET_ENTRIES.map(async (entry) => {
       try {
         const image = await loadImage(entry.url);
         this.loaded.set(entry.key, { ...entry.grid, image });
-        onProgress((index + 1) / SHEET_ENTRIES.length, `${entry.label} 준비 완료`);
+        completed += 1;
+        onProgress(completed / SHEET_ENTRIES.length, `${entry.label} 준비 완료`);
       } catch {
         failed.push(entry.key);
-        onProgress((index + 1) / SHEET_ENTRIES.length, `${entry.label} 로드 실패 — 기본 그래픽 사용`);
+        completed += 1;
+        onProgress(completed / SHEET_ENTRIES.length, `${entry.label} 로드 실패 — 기본 그래픽 사용`);
       }
-    }
+    }));
     return { failed };
   }
 
