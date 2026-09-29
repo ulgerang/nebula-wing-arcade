@@ -40,10 +40,10 @@ export const DEFAULT_SETTINGS: Settings = {
   reducedFlash: false,
   colorTheme: 'default',
   keyBindings: {
-    left: 'A / ←',
-    right: 'D / →',
-    fire: 'SPACE / Z',
-    pause: 'ESC / P'
+    left: '',
+    right: '',
+    fire: '',
+    pause: ''
   }
 };
 

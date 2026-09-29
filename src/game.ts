@@ -7,8 +7,9 @@ import {
   MAX_FRAME_DELTA,
   WAVES
 } from './config';
-import { calculateScore, clamp, ComboTracker, lerp, normalizeName, qualifiesForHighScore, validateWaveData } from './core';
+import { allEnemiesDefeated, calculateScore, circlesOverlap, clamp, ComboTracker, lerp, loseLife, normalizeName, qualifiesForHighScore, sortHighScores, validateWaveData } from './core';
 import { AudioManager } from './audio';
+import { AssetLoader } from './assets';
 import { InputManager } from './input';
 import { StorageManager } from './storage';
 import type {
@@ -36,9 +37,21 @@ interface Player {
   respawnAt: number;
 }
 
+type VfxRow = 0 | 1 | 2 | 3;
+
+interface SpriteEffect {
+  x: number;
+  y: number;
+  life: number;
+  maxLife: number;
+  size: number;
+  row: VfxRow;
+}
+
 export class Game {
   private readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
+  private readonly assets = new AssetLoader();
   private readonly storage = new StorageManager();
   private readonly save: SaveData;
   private readonly input: InputManager;
@@ -47,6 +60,7 @@ export class Game {
   private readonly playerBullets: Projectile[] = [];
   private readonly enemyBullets: Projectile[] = [];
   private readonly particles: Particle[] = [];
+  private readonly spriteEffects: SpriteEffect[] = [];
   private readonly scorePopups: ScorePopup[] = [];
   private readonly stars = Array.from({ length: 80 }, (_, index) => ({
     x: (index * 137.7) % LOGICAL_WIDTH,
@@ -62,6 +76,8 @@ export class Game {
   private animationHandle = 0;
   private lastFrameTime = 0;
   private accumulator = 0;
+  private gameTime = 0;
+  private visualTime = 0;
   private waveElapsed = 0;
   private waveClearTimer = 0;
   private waveClearStarted = false;
@@ -81,6 +97,7 @@ export class Game {
   private hitFlashTimer = 0;
   private redVignetteTimer = 0;
   private resultSaved = false;
+  private highScorePersisted = false;
   private stageClearAvailable = false;
   private bonusPlayed = false;
   private readonly player: Player = {
@@ -104,6 +121,7 @@ export class Game {
     this.save = this.storage.load();
     this.audio = new AudioManager(this.save.settings);
     this.input = new InputManager(canvas, () => this.handleAutoPause());
+    this.input.setKeyBindings(this.save.settings.keyBindings);
   }
 
   setUiListener(listener: UiListener): void {
@@ -115,19 +133,30 @@ export class Game {
   }
 
   start(): void {
-    this.loadingListener?.(0.08, '게임 시스템을 준비하는 중');
+    this.loadingListener?.(0.04, '게임 시스템을 준비하는 중');
     this.animationHandle = window.requestAnimationFrame((time) => this.frame(time));
-    window.setTimeout(() => this.loadingListener?.(0.38, '웨이브 데이터 확인 중'), 110);
-    window.setTimeout(() => this.loadingListener?.(0.68, '입력과 사운드 준비 중'), 220);
-    window.setTimeout(() => {
-      const errors = validateWaveData(WAVES);
-      if (errors.length > 0) {
-        this.loadingListener?.(1, errors.join(' '));
-        return;
-      }
-      this.loadingListener?.(1, '준비 완료');
-      this.setState('Title');
-    }, 360);
+    void this.prepareAssets();
+  }
+
+  private async prepareAssets(): Promise<void> {
+    let result: { failed: Array<'player' | 'enemy' | 'vfx'> };
+    try {
+      result = await this.assets.load((progress, message) => {
+        this.loadingListener?.(0.12 + progress * 0.72, message);
+      });
+    } catch {
+      result = { failed: ['player', 'enemy', 'vfx'] };
+    }
+    const errors = validateWaveData(WAVES);
+    if (errors.length > 0) {
+      this.loadingListener?.(1, errors.join(' '));
+      return;
+    }
+    this.loadingListener?.(
+      1,
+      result.failed.length > 0 ? '일부 이미지 없이 기본 그래픽으로 실행합니다' : '준비 완료'
+    );
+    this.setState('Title');
   }
 
   dispose(): void {
@@ -154,6 +183,7 @@ export class Game {
       },
       qualifiesForHighScore: qualifiesForHighScore(this.lastRunScore || this.score, highScores),
       highScoreSaved: this.resultSaved,
+      highScorePersisted: this.highScorePersisted,
       stageClearAvailable: this.stageClearAvailable,
       bonusPlayed: this.bonusPlayed,
       lastRunScore: this.lastRunScore,
@@ -169,26 +199,35 @@ export class Game {
     this.lastRunScore = 0;
     this.lastRunStage = 1;
     this.waveIndex = 0;
+    this.lastDivePattern = null;
+    this.gameTime = 0;
     this.player.lives = 3;
     this.player.x = LOGICAL_WIDTH / 2;
     this.player.y = LOGICAL_HEIGHT - 54;
     this.player.visible = true;
+    this.player.fireCooldown = 0;
     this.player.invulnerableUntil = 0;
     this.player.respawnAt = 0;
     this.combo.reset();
     this.playerBullets.length = 0;
     this.enemyBullets.length = 0;
-    this.particles.length = 0;
-    this.scorePopups.length = 0;
+    this.clearTransientObjects();
     this.resultSaved = false;
+    this.highScorePersisted = false;
     this.stageClearAvailable = false;
     this.bonusPlayed = false;
+    this.screenShakeTimer = 0;
+    this.hitFlashTimer = 0;
+    this.redVignetteTimer = 0;
     this.setState('Playing');
     this.loadWave(0);
   }
 
   openSettings(): void {
-    if (this.state === 'Title') this.setState('Settings');
+    if (this.state === 'Title') {
+      this.audio.unlock();
+      this.setState('Settings');
+    }
   }
 
   closeSettings(): void {
@@ -202,7 +241,10 @@ export class Game {
       keyBindings: { ...this.save.settings.keyBindings, ...(changes.keyBindings ?? {}) }
     };
     this.save.settings = next;
+    this.audio.unlock();
     this.audio.updateSettings(next);
+    this.input.setKeyBindings(next.keyBindings);
+    if (this.state === 'Title') this.audio.startMusic('title');
     this.storage.saveSettings(this.save, next);
     this.notifyUi();
   }
@@ -214,7 +256,12 @@ export class Game {
     this.combo.reset();
     this.playerBullets.length = 0;
     this.enemyBullets.length = 0;
+    this.clearTransientObjects();
+    this.screenShakeTimer = 0;
+    this.hitFlashTimer = 0;
+    this.redVignetteTimer = 0;
     this.player.visible = true;
+    this.player.fireCooldown = 0;
     this.player.invulnerableUntil = Number.POSITIVE_INFINITY;
     this.player.respawnAt = Number.POSITIVE_INFINITY;
     this.bonusElapsed = 0;
@@ -225,7 +272,10 @@ export class Game {
   }
 
   continueGame(): void {
-    if (this.state === 'Paused') this.setState(this.pausedFrom);
+    if (this.state === 'Paused') {
+      this.audio.unlock();
+      this.setState(this.pausedFrom);
+    }
   }
 
   restartRun(): void {
@@ -236,12 +286,19 @@ export class Game {
     this.enemies = [];
     this.playerBullets.length = 0;
     this.enemyBullets.length = 0;
+    this.clearTransientObjects();
     this.score = 0;
     this.lastRunScore = 0;
     this.waveIndex = 0;
     this.player.lives = 3;
     this.player.visible = true;
     this.player.x = LOGICAL_WIDTH / 2;
+    this.player.fireCooldown = 0;
+    this.player.invulnerableUntil = 0;
+    this.player.respawnAt = 0;
+    this.screenShakeTimer = 0;
+    this.hitFlashTimer = 0;
+    this.redVignetteTimer = 0;
     this.stageClearAvailable = false;
     this.bonusPlayed = false;
     this.setState('Title');
@@ -260,11 +317,10 @@ export class Game {
       date: new Date().toISOString()
     };
     const saved = this.storage.saveHighScore(this.save, entry);
-    if (saved) {
-      this.save.highScores = [...this.storage.load().highScores];
-      this.resultSaved = true;
-      this.audio.play('menu');
-    }
+    this.save.highScores = sortHighScores([...this.save.highScores, entry]);
+    this.resultSaved = true;
+    this.highScorePersisted = saved;
+    this.audio.play('menu');
     this.notifyUi();
   }
 
@@ -272,17 +328,18 @@ export class Game {
     if (!this.lastFrameTime) this.lastFrameTime = time;
     const delta = Math.min(MAX_FRAME_DELTA, Math.max(0, (time - this.lastFrameTime) / 1_000));
     this.lastFrameTime = time;
+    if (this.state !== 'Paused') this.visualTime += delta;
     this.accumulator += delta;
     while (this.accumulator >= FIXED_STEP) {
       this.update(FIXED_STEP);
       this.accumulator -= FIXED_STEP;
     }
-    this.render(time / 1_000);
+    this.render(this.visualTime);
     this.animationHandle = window.requestAnimationFrame((nextTime) => this.frame(nextTime));
   }
 
   private update(delta: number): void {
-    this.updateTransientEffects(delta);
+    if (this.state !== 'Paused') this.updateTransientEffects(delta);
 
     if (this.input.consume('pause')) {
       if (this.state === 'Playing' || this.state === 'Bonus') {
@@ -297,7 +354,8 @@ export class Game {
       return;
     }
     if (this.state === 'Paused') {
-      if (this.input.consume('resume') || this.input.consume('start')) this.continueGame();
+      const resume = this.input.consume('start');
+      if (resume) this.continueGame();
       if (this.input.consume('restart')) this.restartRun();
       if (this.input.consume('title')) this.returnToTitle();
       return;
@@ -307,19 +365,30 @@ export class Game {
       return;
     }
     if (this.state === 'GameOver') {
-      if (this.input.consume('start')) this.showResults();
+      const showResults = this.input.consume('start');
+      const restart = this.input.consume('restart');
+      const title = this.input.consume('title');
+      if (title) this.returnToTitle();
+      else if (restart) this.restartRun();
+      else if (showResults) this.showResults();
       return;
     }
     if (this.state === 'Result') {
-      if (this.input.consume('start') && this.resultSaved) this.beginRun();
+      const start = this.input.consume('start');
+      const restart = this.input.consume('restart');
+      const title = this.input.consume('title');
+      if (title) this.returnToTitle();
+      else if (restart || (start && this.resultSaved)) this.beginRun();
       return;
     }
     if (this.state === 'Bonus') {
+      this.gameTime += delta;
       this.updateBonus(delta);
       return;
     }
     if (this.state !== 'Playing') return;
 
+    this.gameTime += delta;
     this.updatePlaying(delta);
   }
 
@@ -332,6 +401,7 @@ export class Game {
     this.updateEnemies(delta);
     this.updateEnemyBullets(delta);
     this.updateParticles(delta);
+    this.updateSpriteEffects(delta);
     this.updateScorePopups(delta);
 
     if (this.waveClearStarted) {
@@ -346,7 +416,7 @@ export class Game {
           this.loadWave(this.waveIndex + 1);
         }
       }
-    } else if (this.enemies.length > 0 && this.enemies.every((enemy) => enemy.state === 'dead')) {
+    } else if (allEnemiesDefeated(this.enemies)) {
       this.waveClearStarted = true;
       this.waveClearTimer = 2;
       const clearBonus = WAVES[this.waveIndex]?.clearBonus ?? 0;
@@ -362,6 +432,7 @@ export class Game {
     this.updatePlayer(delta);
     this.updatePlayerBullets(delta);
     this.updateParticles(delta);
+    this.updateSpriteEffects(delta);
     this.updateScorePopups(delta);
     const progress = clamp(this.bonusElapsed / 15, 0, 1);
     for (const target of this.enemies) {
@@ -386,9 +457,11 @@ export class Game {
   }
 
   private updatePlayer(delta: number): void {
-    const now = performance.now() / 1_000;
+    const now = this.gameTime;
     if (!this.player.visible) {
       if (this.player.lives > 0 && now >= this.player.respawnAt) {
+        for (const bullet of this.enemyBullets) bullet.active = false;
+        for (const bullet of this.playerBullets) bullet.active = false;
         this.player.visible = true;
         this.player.x = LOGICAL_WIDTH / 2;
       }
@@ -398,10 +471,12 @@ export class Game {
     const axis = this.input.horizontalAxis();
     this.player.x = clamp(this.player.x + axis * 340 * delta, 30, LOGICAL_WIDTH - 30);
     this.player.fireCooldown -= delta;
-    const firePressed = this.input.consume('fire');
-    if ((firePressed || this.input.isDown('fire')) && this.player.fireCooldown <= 0 && this.activePlayerBulletCount() < 2) {
-      this.firePlayerBullet();
-      this.player.fireCooldown = 0.22;
+    if (this.player.fireCooldown <= 0 && this.activePlayerBulletCount() < 2) {
+      const firePressed = this.input.consume('fire');
+      if (firePressed || this.input.isDown('fire')) {
+        this.firePlayerBullet();
+        this.player.fireCooldown = 0.22;
+      }
     }
   }
 
@@ -426,11 +501,11 @@ export class Game {
       }
       for (const enemy of this.enemies) {
         if (enemy.state === 'dead' || enemy.state === 'entering' && enemy.y < -10) continue;
-        if (this.distance(bullet.x, bullet.y, enemy.x, enemy.y) <= enemyRadius(enemy.type) + bullet.radius) {
+        if (circlesOverlap(bullet.x, bullet.y, bullet.radius, enemy.x, enemy.y, enemyRadius(enemy.type))) {
           bullet.active = false;
           enemy.hp -= 1;
           enemy.hitFlash = 0.08;
-          this.spawnBurst(enemy.x, enemy.y, ENEMY_CONFIG[enemy.type].color, 5);
+          this.spawnBurst(enemy.x, enemy.y, ENEMY_CONFIG[enemy.type].color, 5, 0);
           if (enemy.hp <= 0) this.killEnemy(enemy);
           else this.audio.play('hit');
           break;
@@ -484,7 +559,7 @@ export class Game {
           enemy.x = enemy.diveStartX + (enemy.diveTargetX - enemy.diveStartX) * progress + side * Math.sin(progress * Math.PI) * 140;
           enemy.y = enemy.diveStartY + progress * 650;
         }
-        if (this.player.visible && this.distance(enemy.x, enemy.y, this.player.x, this.player.y) < enemyRadius(enemy.type) + 13) {
+        if (this.player.visible && circlesOverlap(enemy.x, enemy.y, enemyRadius(enemy.type), this.player.x, this.player.y, 13)) {
           this.hitPlayer();
           this.returnEnemyToFormation(enemy);
         } else if (progress >= 1) {
@@ -522,7 +597,7 @@ export class Game {
   }
 
   private fireEnemyBullet(enemy: Enemy): void {
-    if (this.activeEnemyBulletCount() >= 12) return;
+    if (!this.player.visible || this.activeEnemyBulletCount() >= 12) return;
     const bullet = this.acquireProjectile(this.enemyBullets, COLORS.enemyBullet, 5);
     const dx = this.player.x - enemy.x;
     const dy = this.player.y - enemy.y;
@@ -544,7 +619,7 @@ export class Game {
         bullet.active = false;
         continue;
       }
-      if (this.player.visible && performance.now() / 1_000 >= this.player.invulnerableUntil && this.distance(bullet.x, bullet.y, this.player.x, this.player.y) < bullet.radius + 11) {
+      if (this.player.visible && this.gameTime >= this.player.invulnerableUntil && circlesOverlap(bullet.x, bullet.y, bullet.radius, this.player.x, this.player.y, 11)) {
         bullet.active = false;
         this.hitPlayer();
       }
@@ -552,11 +627,11 @@ export class Game {
   }
 
   private hitPlayer(): void {
-    const now = performance.now() / 1_000;
+    const now = this.gameTime;
     if (!this.player.visible || now < this.player.invulnerableUntil) return;
-    this.player.lives -= 1;
+    this.player.lives = loseLife(this.player.lives);
     this.player.visible = false;
-    this.player.invulnerableUntil = now + 1.5;
+    this.player.invulnerableUntil = now + 2.5;
     this.player.respawnAt = now + 1;
     this.combo.reset();
     for (const bullet of this.enemyBullets) bullet.active = false;
@@ -564,7 +639,7 @@ export class Game {
     this.redVignetteTimer = 0.45;
     this.screenShakeTimer = 0.08;
     this.audio.play('playerHit');
-    this.spawnBurst(this.player.x, this.player.y, COLORS.danger, 18);
+    this.spawnBurst(this.player.x, this.player.y, COLORS.danger, 18, 2);
     this.notifyUi();
     if (this.player.lives <= 0) {
       this.lastRunScore = this.score;
@@ -585,7 +660,9 @@ export class Game {
     } else {
       this.addPopup(enemy.x, enemy.y - 20, `+${score}`, COLORS.text, 0.8);
     }
-    this.spawnBurst(enemy.x, enemy.y, ENEMY_CONFIG[enemy.type].color, enemy.type === 'bruiser' ? 14 : 8);
+    const strongEnemy = enemy.type === 'bruiser' || enemy.type === 'carrier';
+    this.spawnBurst(enemy.x, enemy.y, ENEMY_CONFIG[enemy.type].color, strongEnemy ? 14 : 8, strongEnemy ? 1 : 0);
+    if (comboResult.milestoneBonus > 0) this.spawnSpriteEffect(enemy.x, enemy.y - 22, 3, 80, 0.5);
     this.audio.play(enemy.type === 'bruiser' || enemy.type === 'carrier' ? 'strongHit' : 'hit');
     if (enemy.type === 'bruiser' || enemy.type === 'carrier') this.screenShakeTimer = 0.08;
     if (this.state === 'Bonus') this.bonusKilled += 1;
@@ -596,13 +673,14 @@ export class Game {
   private loadWave(index: number): void {
     const wave = WAVES[index];
     if (!wave) return;
+    for (const bullet of this.playerBullets) bullet.active = false;
+    for (const bullet of this.enemyBullets) bullet.active = false;
     this.waveIndex = index;
     this.waveElapsed = 0;
     this.waveClearTimer = 0;
     this.waveClearStarted = false;
     this.formationTime = 0;
     this.attackTimer = this.waveIndex === 0 ? 16 : 2.5;
-    this.lastDivePattern = null;
     this.enemies = [];
     const total = wave.enemies.reduce((sum, definition) => sum + definition.count, 0);
     const slots = formationSlots(total, wave.formation);
@@ -647,49 +725,77 @@ export class Game {
   }
 
   private updateParticles(delta: number): void {
-    for (let index = this.particles.length - 1; index >= 0; index -= 1) {
-      const particle = this.particles[index];
+    for (const particle of this.particles) {
+      if (particle.life <= 0) continue;
       particle.life -= delta;
-      if (particle.life <= 0) {
-        this.particles.splice(index, 1);
-        continue;
-      }
+      if (particle.life <= 0) continue;
       particle.x += particle.vx * delta;
       particle.y += particle.vy * delta;
       particle.vy += 22 * delta;
     }
   }
 
-  private updateScorePopups(delta: number): void {
-    for (let index = this.scorePopups.length - 1; index >= 0; index -= 1) {
-      const popup = this.scorePopups[index];
-      popup.life -= delta;
-      popup.y -= 20 * delta;
-      if (popup.life <= 0) this.scorePopups.splice(index, 1);
+  private updateSpriteEffects(delta: number): void {
+    for (const effect of this.spriteEffects) {
+      if (effect.life <= 0) continue;
+      effect.life -= delta;
     }
   }
 
-  private spawnBurst(x: number, y: number, color: string, count: number): void {
+  private updateScorePopups(delta: number): void {
+    for (const popup of this.scorePopups) {
+      if (popup.life <= 0) continue;
+      popup.life -= delta;
+      popup.y -= 20 * delta;
+    }
+  }
+
+  private spawnBurst(x: number, y: number, color: string, count: number, vfxRow: VfxRow): void {
+    if (this.assets.has('vfx')) {
+      const size = vfxRow === 0 ? 46 : vfxRow === 1 ? 88 : 76;
+      const life = vfxRow === 0 ? 0.3 : vfxRow === 1 ? 0.48 : 0.42;
+      this.spawnSpriteEffect(x, y, vfxRow, size, life);
+      return;
+    }
     for (let index = 0; index < count; index += 1) {
-      if (this.particles.length >= 300) this.particles.shift();
+      let particle = this.particles.find((candidate) => candidate.life <= 0);
+      if (!particle) {
+        if (this.particles.length >= 300) continue;
+        particle = { x, y, vx: 0, vy: 0, life: 0, maxLife: 0.5, size: 2, color };
+        this.particles.push(particle);
+      }
       const angle = (Math.PI * 2 * index) / count;
       const speed = 45 + (index % 4) * 18;
-      this.particles.push({
-        x,
-        y,
-        vx: Math.cos(angle) * speed,
-        vy: Math.sin(angle) * speed,
-        life: 0.32 + (index % 3) * 0.1,
-        maxLife: 0.5,
-        size: 2 + (index % 3),
-        color
-      });
+      particle.x = x;
+      particle.y = y;
+      particle.vx = Math.cos(angle) * speed;
+      particle.vy = Math.sin(angle) * speed;
+      particle.life = 0.32 + (index % 3) * 0.1;
+      particle.maxLife = 0.5;
+      particle.size = 2 + (index % 3);
+      particle.color = color;
     }
+  }
+
+  private spawnSpriteEffect(x: number, y: number, row: VfxRow, size: number, life: number): void {
+    if (!this.assets.has('vfx')) return;
+    let effect = this.spriteEffects.find((candidate) => candidate.life <= 0);
+    if (!effect) {
+      if (this.spriteEffects.length >= 30) return;
+      effect = { x, y, life, maxLife: life, size, row };
+      this.spriteEffects.push(effect);
+    }
+    Object.assign(effect, { x, y, life, maxLife: life, size, row });
   }
 
   private addPopup(x: number, y: number, text: string, color: string, life: number): void {
-    if (this.scorePopups.length >= 30) this.scorePopups.shift();
-    this.scorePopups.push({ x, y, text, life, maxLife: life, color });
+    let popup = this.scorePopups.find((candidate) => candidate.life <= 0);
+    if (!popup) {
+      if (this.scorePopups.length >= 30) return;
+      popup = { x, y, text, life, maxLife: life, color };
+      this.scorePopups.push(popup);
+    }
+    Object.assign(popup, { x, y, text, life, maxLife: life, color });
   }
 
   private acquireProjectile(pool: Projectile[], color: string, radius: number): Projectile {
@@ -701,11 +807,21 @@ export class Game {
   }
 
   private activePlayerBulletCount(): number {
-    return this.playerBullets.filter((bullet) => bullet.active).length;
+    let active = 0;
+    for (const bullet of this.playerBullets) if (bullet.active) active += 1;
+    return active;
   }
 
   private activeEnemyBulletCount(): number {
-    return this.enemyBullets.filter((bullet) => bullet.active).length;
+    let active = 0;
+    for (const bullet of this.enemyBullets) if (bullet.active) active += 1;
+    return active;
+  }
+
+  private clearTransientObjects(): void {
+    for (const particle of this.particles) particle.life = 0;
+    for (const effect of this.spriteEffects) effect.life = 0;
+    for (const popup of this.scorePopups) popup.life = 0;
   }
 
   private qualifiesForLastRun(): boolean {
@@ -721,6 +837,7 @@ export class Game {
 
   private setState(next: GameStateName): void {
     if (this.state === next) return;
+    this.input.clear();
     this.state = next;
     if (next === 'Title') {
       this.audio.stopMusic();
@@ -741,16 +858,13 @@ export class Game {
     } else if (next === 'Result') {
       this.audio.stopMusic();
       this.resultSaved = false;
+      this.highScorePersisted = false;
     }
     this.notifyUi();
   }
 
   private notifyUi(): void {
     this.uiListener?.(this.getSnapshot());
-  }
-
-  private distance(x1: number, y1: number, x2: number, y2: number): number {
-    return Math.hypot(x2 - x1, y2 - y1);
   }
 
   private render(timeSeconds: number): void {
@@ -793,6 +907,7 @@ export class Game {
       if (bullet.active) this.drawProjectile(bullet);
     }
     this.drawParticles();
+    this.drawSpriteEffects();
     if (this.player.visible) this.drawPlayer();
     this.drawScorePopups();
     this.drawHud();
@@ -843,7 +958,9 @@ export class Game {
     if (this.combo.count > 0) {
       this.ctx.textAlign = 'right';
       this.ctx.fillStyle = COLORS.good;
-      this.ctx.fillText(`COMBO ${this.combo.count}  x${this.combo.multiplier}`, LOGICAL_WIDTH - 20, LOGICAL_HEIGHT - 30);
+      const nextCount = this.combo.multiplier >= 5 ? 0 : 3 - (this.combo.count % 3);
+      const nextStep = nextCount > 0 ? `  NEXT x${this.combo.multiplier + 1} IN ${nextCount}` : '';
+      this.ctx.fillText(`COMBO ${this.combo.count}  x${this.combo.multiplier}${nextStep}`, LOGICAL_WIDTH - 20, LOGICAL_HEIGHT - 30);
       this.ctx.textAlign = 'left';
     }
     if (this.waveElapsed < 2 && this.state === 'Playing') {
@@ -877,8 +994,16 @@ export class Game {
 
   private drawPlayer(): void {
     const ctx = this.ctx;
-    const blinking = this.state !== 'Bonus' && performance.now() / 1_000 < this.player.invulnerableUntil && Math.floor(performance.now() / 100) % 2 === 0;
+    const blinking = this.state !== 'Bonus' && this.gameTime < this.player.invulnerableUntil && Math.floor(this.gameTime * 10) % 2 === 0;
     if (blinking) return;
+    const animationFrame = Math.floor(this.gameTime * (1_000 / 120)) % 4;
+    const recoveryFrame = this.gameTime < this.player.invulnerableUntil ? 4 : 0;
+    if (
+      this.save.settings.colorTheme === 'default' &&
+      this.assets.drawFrame(ctx, 'player', recoveryFrame + animationFrame, this.player.x, this.player.y, 50)
+    ) {
+      return;
+    }
     ctx.save();
     ctx.translate(this.player.x, this.player.y);
     ctx.fillStyle = COLORS.playerGlow;
@@ -909,6 +1034,23 @@ export class Game {
     const ctx = this.ctx;
     const config = ENEMY_CONFIG[enemy.type];
     const enemyColor = this.save.settings.colorTheme === 'high-contrast' ? '#f5fbff' : config.color;
+    const frameColumn = { scout: 0, hunter: 1, bruiser: 2, carrier: 3, bonusDrone: 4 }[enemy.type];
+    const spriteSize = { scout: 52, hunter: 46, bruiser: 48, carrier: 56, bonusDrone: 52 }[enemy.type];
+    if (
+      this.save.settings.colorTheme === 'default' &&
+      this.assets.drawFrame(
+        ctx,
+        'enemy',
+        frameColumn + (enemy.hitFlash > 0 && !this.save.settings.reducedFlash ? 5 : 0),
+        enemy.x,
+        enemy.y,
+        spriteSize,
+        enemy.state === 'entering' ? 0.9 : 1
+      )
+    ) {
+      this.drawEnemyHealthBar(enemy);
+      return;
+    }
     ctx.save();
     ctx.translate(enemy.x, enemy.y);
     ctx.globalAlpha = enemy.state === 'entering' ? 0.9 : 1;
@@ -946,20 +1088,26 @@ export class Game {
     ctx.closePath();
     ctx.fill();
     ctx.stroke();
-    if (enemy.maxHp > 1) {
-      ctx.fillStyle = '#07111e';
-      ctx.fillRect(-16, 21, 32, 3);
-      ctx.fillStyle = COLORS.good;
-      ctx.fillRect(-16, 21, 32 * (enemy.hp / enemy.maxHp), 3);
-    }
     ctx.restore();
+    this.drawEnemyHealthBar(enemy);
+  }
+
+  private drawEnemyHealthBar(enemy: Enemy): void {
+    if (enemy.maxHp <= 1) return;
+    this.ctx.fillStyle = '#07111e';
+    this.ctx.fillRect(enemy.x - 16, enemy.y + 21, 32, 3);
+    this.ctx.fillStyle = COLORS.good;
+    this.ctx.fillRect(enemy.x - 16, enemy.y + 21, 32 * (enemy.hp / enemy.maxHp), 3);
   }
 
   private drawProjectile(projectile: Projectile): void {
     const ctx = this.ctx;
+    const projectileColor = this.save.settings.colorTheme === 'high-contrast'
+      ? projectile.color === COLORS.enemyBullet ? '#ffd166' : '#46dcff'
+      : projectile.color;
     ctx.save();
-    ctx.fillStyle = projectile.color;
-    ctx.shadowColor = projectile.color;
+    ctx.fillStyle = projectileColor;
+    ctx.shadowColor = projectileColor;
     ctx.shadowBlur = 10;
     ctx.beginPath();
     if (projectile.color === COLORS.enemyBullet) {
@@ -977,6 +1125,7 @@ export class Game {
 
   private drawParticles(): void {
     for (const particle of this.particles) {
+      if (particle.life <= 0) continue;
       this.ctx.globalAlpha = clamp(particle.life / particle.maxLife, 0, 1);
       this.ctx.fillStyle = particle.color;
       this.ctx.fillRect(particle.x, particle.y, particle.size, particle.size);
@@ -984,10 +1133,22 @@ export class Game {
     this.ctx.globalAlpha = 1;
   }
 
+  private drawSpriteEffects(): void {
+    if (this.save.settings.reducedFlash) return;
+    for (const effect of this.spriteEffects) {
+      if (effect.life <= 0) continue;
+      const progress = clamp(1 - effect.life / effect.maxLife, 0, 0.999);
+      const frame = Math.min(3, Math.floor(progress * 4));
+      const alpha = clamp((effect.life / effect.maxLife) * 1.5, 0.25, 1);
+      this.assets.drawFrame(this.ctx, 'vfx', effect.row * 4 + frame, effect.x, effect.y, effect.size, alpha);
+    }
+  }
+
   private drawScorePopups(): void {
     this.ctx.textAlign = 'center';
     this.ctx.font = '700 13px Consolas, monospace';
     for (const popup of this.scorePopups) {
+      if (popup.life <= 0) continue;
       this.ctx.globalAlpha = clamp(popup.life / popup.maxLife, 0, 1);
       this.ctx.fillStyle = popup.color;
       this.ctx.fillText(popup.text, popup.x, popup.y);

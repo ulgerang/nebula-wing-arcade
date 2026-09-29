@@ -1,6 +1,7 @@
 import { INPUT_BUFFER_MS } from './config';
+import type { Settings } from './types';
 
-export type InputAction = 'left' | 'right' | 'fire' | 'pause' | 'start' | 'resume' | 'restart' | 'title';
+export type InputAction = 'left' | 'right' | 'fire' | 'pause' | 'start' | 'restart' | 'title';
 
 const ACTION_KEYS: Record<InputAction, string[]> = {
   left: ['a', 'arrowleft'],
@@ -8,7 +9,6 @@ const ACTION_KEYS: Record<InputAction, string[]> = {
   fire: [' ', 'spacebar', 'z'],
   pause: ['escape', 'esc', 'p'],
   start: ['enter', 'return'],
-  resume: ['enter', 'return'],
   restart: ['r'],
   title: ['t']
 };
@@ -21,7 +21,10 @@ export class InputManager {
   private readonly down = new Set<string>();
   private readonly pressedAt = new Map<InputAction, number>();
   private readonly listeners: Array<() => void> = [];
-  private gamepadConnected = false;
+  private keyBindings: Settings['keyBindings'] = { left: '', right: '', fire: '', pause: '' };
+  private gamepadDown = new Set<InputAction>();
+  private gamepadAxis = 0;
+  private lastGamepadPollAt = Number.NEGATIVE_INFINITY;
 
   constructor(target: HTMLElement, onAutoPause: () => void) {
     this.target = target;
@@ -34,52 +37,68 @@ export class InputManager {
       const key = normalizeKey(event.key);
       const source = event.target instanceof HTMLElement ? event.target : null;
       const isEditable = source?.matches('input, textarea, select, [contenteditable="true"]') ?? false;
+      const isOverlayControl = source !== null && source.closest('#screen-overlay button, #screen-overlay input, #screen-overlay select, #screen-overlay textarea, #screen-overlay [contenteditable="true"]') !== null;
+      if (isEditable || isOverlayControl) return;
       if (!isEditable && PREVENT_DEFAULT_KEYS.has(key)) event.preventDefault();
       const wasDown = this.down.has(key);
       this.down.add(key);
       if (!wasDown) {
         for (const [action, keys] of Object.entries(ACTION_KEYS) as Array<[InputAction, string[]]>) {
-          if (keys.includes(key)) this.pressedAt.set(action, performance.now());
+          const custom = this.keyBindings[action as keyof Settings['keyBindings']];
+          if (keys.includes(key) || (custom !== undefined && custom !== '' && normalizeKey(custom) === key)) {
+            this.pressedAt.set(action, performance.now());
+          }
         }
       }
-      if (!isEditable) this.target.focus({ preventScroll: true });
+      this.target.focus({ preventScroll: true });
     };
     const keyup = (event: KeyboardEvent) => {
       const key = normalizeKey(event.key);
       this.down.delete(key);
     };
-    const blur = () => this.onAutoPause();
+    const blur = () => {
+      this.clear();
+      this.onAutoPause();
+    };
     const visibility = () => {
-      if (document.visibilityState !== 'visible') this.onAutoPause();
-    };
-    const gamepadConnected = () => {
-      this.gamepadConnected = true;
-    };
-    const gamepadDisconnected = () => {
-      this.gamepadConnected = false;
+      if (document.visibilityState !== 'visible') {
+        this.clear();
+        this.onAutoPause();
+      }
     };
 
     window.addEventListener('keydown', keydown, { passive: false });
     window.addEventListener('keyup', keyup, { passive: true });
     window.addEventListener('blur', blur);
     document.addEventListener('visibilitychange', visibility);
-    window.addEventListener('gamepadconnected', gamepadConnected);
-    window.addEventListener('gamepaddisconnected', gamepadDisconnected);
     this.listeners.push(
       () => window.removeEventListener('keydown', keydown),
       () => window.removeEventListener('keyup', keyup),
       () => window.removeEventListener('blur', blur),
       () => document.removeEventListener('visibilitychange', visibility),
-      () => window.removeEventListener('gamepadconnected', gamepadConnected),
-      () => window.removeEventListener('gamepaddisconnected', gamepadDisconnected)
     );
   }
 
+  setKeyBindings(bindings: Settings['keyBindings']): void {
+    this.keyBindings = { ...bindings };
+  }
+
+  clear(): void {
+    this.down.clear();
+    this.pressedAt.clear();
+    this.gamepadDown.clear();
+    this.gamepadAxis = 0;
+  }
+
   isDown(action: InputAction): boolean {
-    return ACTION_KEYS[action].some((key) => this.down.has(key));
+    const custom = this.keyBindings[action as keyof Settings['keyBindings']];
+    return ACTION_KEYS[action].some((key) => this.down.has(key)) ||
+      (custom !== undefined && custom !== '' && this.down.has(normalizeKey(custom))) ||
+      this.gamepadDown.has(action);
   }
 
   consume(action: InputAction): boolean {
+    this.pollGamepad();
     const pressed = this.pressedAt.get(action);
     if (pressed === undefined) return false;
     this.pressedAt.delete(action);
@@ -87,21 +106,41 @@ export class InputManager {
   }
 
   horizontalAxis(): number {
-    let axis = 0;
+    this.pollGamepad();
     const bufferedLeft = this.consume('left');
     const bufferedRight = this.consume('right');
+    let axis = this.gamepadAxis;
     if (this.isDown('left') || bufferedLeft) axis -= 1;
     if (this.isDown('right') || bufferedRight) axis += 1;
-    if (this.gamepadConnected) {
-      const pad = Array.from(navigator.getGamepads?.() ?? []).find((candidate) => candidate?.connected);
-      if (pad) {
-        const stick = pad.axes[0] ?? 0;
-        if (Math.abs(stick) > 0.15) axis = stick;
-        if (pad.buttons[0]?.pressed) this.pressedAt.set('fire', performance.now());
-        if (pad.buttons[9]?.pressed) this.pressedAt.set('pause', performance.now());
+    return Math.max(-1, Math.min(1, axis));
+  }
+
+  private pollGamepad(): void {
+    const now = performance.now();
+    if (now - this.lastGamepadPollAt < 8) return;
+    this.lastGamepadPollAt = now;
+    const pads = navigator.getGamepads?.() ?? [];
+    let pad: Gamepad | null = null;
+    for (const candidate of pads) {
+      if (candidate?.connected) {
+        pad = candidate;
+        break;
       }
     }
-    return Math.max(-1, Math.min(1, axis));
+    const nextDown = new Set<InputAction>();
+    this.gamepadAxis = 0;
+    if (pad) {
+      const stick = pad.axes[0] ?? 0;
+      if (Math.abs(stick) > 0.15) this.gamepadAxis = stick;
+      if (pad.buttons[14]?.pressed) nextDown.add('left');
+      if (pad.buttons[15]?.pressed) nextDown.add('right');
+      if (pad.buttons[0]?.pressed) nextDown.add('fire');
+      if (pad.buttons[9]?.pressed) nextDown.add('pause');
+    }
+    for (const action of nextDown) {
+      if (!this.gamepadDown.has(action)) this.pressedAt.set(action, now);
+    }
+    this.gamepadDown = nextDown;
   }
 
   dispose(): void {

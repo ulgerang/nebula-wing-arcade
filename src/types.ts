@@ -113,6 +113,7 @@ export interface GameSnapshot {
   settings: Settings;
   qualifiesForHighScore: boolean;
   highScoreSaved: boolean;
+  highScorePersisted: boolean;
   stageClearAvailable: boolean;
   bonusPlayed: boolean;
   lastRunScore: number;

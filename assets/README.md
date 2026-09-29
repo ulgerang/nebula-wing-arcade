@@ -1,13 +1,13 @@
 # Asset inventory
 
-The MVP still renders its runtime visuals with the original Canvas drawing code and Web Audio synthesis. Generated sprite sheets are staged under `assets/generated/` for the next `AssetLoader` integration pass; they do not replace the current runtime renderer yet.
+The MVP uses Canvas rendering and Web Audio synthesis. Generated sprite sheets are loaded by `src/assets.ts` and used by the game renderer when available; the original procedural visuals remain as a safe fallback.
 
 | Asset group | Source | License or permission | Final build status |
 |---|---|---|---|
 | Current player, enemies, bullets, particles, background, HUD icons | `src/game.ts` canvas drawing | Original implementation | Included |
-| Prepared player sprite sheet | `assets/generated/sprites/player/player_sheet.png` | Generated for this project with the built-in image generation tool | Staged, not wired |
-| Prepared enemy roster sprite sheet | `assets/generated/sprites/enemies/enemy_roster_sheet.png` | Generated for this project with the built-in image generation tool | Staged, not wired |
-| Prepared combat VFX sprite sheet | `assets/generated/sprites/vfx/combat_vfx_sheet.png` | Generated for this project with the built-in image generation tool | Staged, not wired |
+| Prepared player sprite sheet | `assets/generated/sprites/player/player_sheet.png` | Generated for this project with the built-in image generation tool | Loaded with fallback |
+| Prepared enemy roster sprite sheet | `assets/generated/sprites/enemies/enemy_roster_sheet.png` | Generated for this project with the built-in image generation tool | Loaded with fallback |
+| Prepared combat VFX sprite sheet | `assets/generated/sprites/vfx/combat_vfx_sheet.png` | Generated for this project with the built-in image generation tool | Loaded with fallback |
 | Sprite frame layouts and usage notes | `assets/generated/metadata/*.json` | Project metadata | Included |
 | Title and interface typography | System monospace fonts | Browser/system-provided | Included |
 | BGM and gameplay sound effects | `src/audio.ts` Web Audio synthesis | Original implementation | Included |

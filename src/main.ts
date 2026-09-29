@@ -1,4 +1,5 @@
 import './styles.css';
+import { DEFAULT_SETTINGS } from './config';
 import { Game } from './game';
 import type { GameSnapshot, Settings } from './types';
 
@@ -18,7 +19,8 @@ if (!window.requestAnimationFrame || !canvas.getContext('2d')) {
   overlay.innerHTML = '<div class="screen-card"><h1>지원되지 않는 브라우저</h1><p>Canvas와 최신 브라우저 기능이 필요합니다.</p></div>';
 } else {
   const game = new Game(canvas);
-  let lastSnapshot: GameSnapshot | null = null;
+  let lastSnapshot: GameSnapshot | null = game.getSnapshot();
+  let pendingBinding: keyof Settings['keyBindings'] | null = null;
 
   game.setLoadingListener((progress, message) => {
     if (lastSnapshot?.state !== 'Loading') return;
@@ -34,14 +36,29 @@ if (!window.requestAnimationFrame || !canvas.getContext('2d')) {
   });
 
   game.setUiListener((snapshot) => {
+    const preserveSettings = lastSnapshot?.state === snapshot.state && snapshot.state === 'Settings';
+    if (snapshot.state !== 'Settings') pendingBinding = null;
     lastSnapshot = snapshot;
-    renderOverlay(snapshot);
+    renderOverlay(snapshot, preserveSettings, pendingBinding);
   });
 
   overlay.addEventListener('click', (event) => {
     const target = event.target instanceof HTMLElement ? event.target.closest<HTMLElement>('[data-action]') : null;
     const action = target?.dataset.action;
     if (!action) return;
+    if (action === 'bind-key') {
+      const binding = target?.dataset.binding as keyof Settings['keyBindings'] | undefined;
+      if (binding && binding in DEFAULT_SETTINGS.keyBindings) {
+        pendingBinding = binding;
+        target.textContent = '키를 누르세요 · Esc 취소';
+      }
+      return;
+    }
+    if (action === 'reset-keys') {
+      pendingBinding = null;
+      game.updateSettings({ keyBindings: { ...DEFAULT_SETTINGS.keyBindings } });
+      return;
+    }
     if (action === 'start') game.beginRun();
     if (action === 'continue') game.continueGame();
     if (action === 'restart') game.restartRun();
@@ -51,6 +68,23 @@ if (!window.requestAnimationFrame || !canvas.getContext('2d')) {
     if (action === 'close-settings') game.closeSettings();
     if (action === 'bonus') game.beginBonusStage();
     canvas.focus({ preventScroll: true });
+  });
+
+  overlay.addEventListener('keydown', (event) => {
+    if (!pendingBinding) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.key === 'Escape') {
+      pendingBinding = null;
+      if (lastSnapshot) syncSettings(lastSnapshot, pendingBinding);
+      return;
+    }
+    if (event.key === 'Shift' || event.key === 'Control' || event.key === 'Alt' || event.key === 'Meta' || event.key === 'Dead' || event.key === 'Process') return;
+    const key = event.key === ' ' ? ' ' : event.key.toLowerCase();
+    const binding = pendingBinding;
+    pendingBinding = null;
+    const currentBindings = lastSnapshot?.settings.keyBindings ?? DEFAULT_SETTINGS.keyBindings;
+    game.updateSettings({ keyBindings: { ...currentBindings, [binding]: key } });
   });
 
   overlay.addEventListener('input', (event) => {
@@ -84,9 +118,13 @@ if (!window.requestAnimationFrame || !canvas.getContext('2d')) {
   window.addEventListener('beforeunload', () => game.dispose());
 }
 
-function renderOverlay(snapshot: GameSnapshot): void {
+function renderOverlay(snapshot: GameSnapshot, preserveSettings = false, pendingBinding: keyof Settings['keyBindings'] | null = null): void {
   liveStatus.textContent = statusFor(snapshot);
   if (snapshot.state === 'Loading') return;
+  if (snapshot.state === 'Settings' && preserveSettings) {
+    syncSettings(snapshot, pendingBinding);
+    return;
+  }
   if (snapshot.state === 'Playing') {
     overlay.className = 'screen-overlay empty';
     overlay.innerHTML = '';
@@ -133,9 +171,9 @@ function renderOverlay(snapshot: GameSnapshot): void {
         <p class="eyebrow">SYSTEM OPTIONS</p>
         <h1>설정</h1>
         <div class="settings-list">
-          <label for="bgm-volume">BGM 볼륨 <output>${Math.round(snapshot.settings.bgmVolume * 100)}%</output></label>
+          <label for="bgm-volume">BGM 볼륨 <output data-output="bgmVolume">${Math.round(snapshot.settings.bgmVolume * 100)}%</output></label>
           <input id="bgm-volume" type="range" min="0" max="1" step="0.01" value="${snapshot.settings.bgmVolume}" data-setting="bgmVolume" />
-          <label for="sfx-volume">효과음 볼륨 <output>${Math.round(snapshot.settings.sfxVolume * 100)}%</output></label>
+          <label for="sfx-volume">효과음 볼륨 <output data-output="sfxVolume">${Math.round(snapshot.settings.sfxVolume * 100)}%</output></label>
           <input id="sfx-volume" type="range" min="0" max="1" step="0.01" value="${snapshot.settings.sfxVolume}" data-setting="sfxVolume" />
           <label class="check-row"><input type="checkbox" data-setting="screenShake" ${snapshot.settings.screenShake ? 'checked' : ''} /> 화면 흔들림</label>
           <label class="check-row"><input type="checkbox" data-setting="reducedFlash" ${snapshot.settings.reducedFlash ? 'checked' : ''} /> 플래시 효과 줄이기</label>
@@ -144,6 +182,13 @@ function renderOverlay(snapshot: GameSnapshot): void {
             <option value="default" ${snapshot.settings.colorTheme === 'default' ? 'selected' : ''}>기본</option>
             <option value="high-contrast" ${snapshot.settings.colorTheme === 'high-contrast' ? 'selected' : ''}>고대비</option>
           </select>
+          <p class="binding-heading">추가 키 지정</p>
+          ${renderBindingRow('left', '왼쪽 이동', snapshot.settings.keyBindings.left)}
+          ${renderBindingRow('right', '오른쪽 이동', snapshot.settings.keyBindings.right)}
+          ${renderBindingRow('fire', '발사', snapshot.settings.keyBindings.fire)}
+          ${renderBindingRow('pause', '일시정지', snapshot.settings.keyBindings.pause)}
+          <p class="binding-hint">A / D, 방향키, Space / Z, Esc / P는 항상 사용할 수 있습니다.</p>
+          <button class="secondary-button reset-keys-button" data-action="reset-keys">추가 키 초기화</button>
         </div>
         <button class="primary-button" data-action="close-settings">저장하고 돌아가기 <span>ESC</span></button>
       </div>`;
@@ -160,6 +205,7 @@ function renderOverlay(snapshot: GameSnapshot): void {
         <div class="button-stack">
           <button class="primary-button" data-action="results">결과 보기 <span>ENTER</span></button>
           <button class="secondary-button" data-action="restart">즉시 재시작 <span>R</span></button>
+          <button class="secondary-button" data-action="title">타이틀로 돌아가기 <span>T</span></button>
         </div>
       </div>`;
     return;
@@ -167,7 +213,9 @@ function renderOverlay(snapshot: GameSnapshot): void {
 
   if (snapshot.state === 'Result') {
     const highScoreSection = snapshot.highScoreSaved
-      ? '<p class="saved-message">하이스코어가 저장되었습니다.</p>'
+      ? snapshot.highScorePersisted
+        ? '<p class="saved-message">하이스코어가 저장되었습니다.</p>'
+        : '<p class="saved-message">이번 세션 하이스코어에 등록했습니다. 브라우저 저장은 다시 시도합니다.</p>'
       : snapshot.qualifiesForHighScore
         ? `<form class="highscore-form" data-action="highscore">
             <label for="highscore-name">하이스코어 등록 <span>영문 대문자 3자리</span></label>
@@ -201,6 +249,38 @@ function renderOverlay(snapshot: GameSnapshot): void {
     input?.focus({ preventScroll: true });
     input?.select();
   }
+}
+
+function renderBindingRow(binding: keyof Settings['keyBindings'], label: string, value: string): string {
+  return `<div class="binding-row"><span>${label}</span><button class="secondary-button" data-action="bind-key" data-binding="${binding}">${escapeHtml(formatBinding(value))}</button></div>`;
+}
+
+function syncSettings(snapshot: GameSnapshot, pendingBinding: keyof Settings['keyBindings'] | null): void {
+  for (const setting of ['bgmVolume', 'sfxVolume'] as const) {
+    const slider = overlay.querySelector<HTMLInputElement>(`[data-setting="${setting}"]`);
+    const output = overlay.querySelector<HTMLOutputElement>(`[data-output="${setting}"]`);
+    if (slider) slider.value = String(snapshot.settings[setting]);
+    if (output) output.textContent = `${Math.round(snapshot.settings[setting] * 100)}%`;
+  }
+  const shake = overlay.querySelector<HTMLInputElement>('[data-setting="screenShake"]');
+  const flash = overlay.querySelector<HTMLInputElement>('[data-setting="reducedFlash"]');
+  const theme = overlay.querySelector<HTMLSelectElement>('[data-setting="colorTheme"]');
+  if (shake) shake.checked = snapshot.settings.screenShake;
+  if (flash) flash.checked = snapshot.settings.reducedFlash;
+  if (theme) theme.value = snapshot.settings.colorTheme;
+  for (const binding of Object.keys(snapshot.settings.keyBindings) as Array<keyof Settings['keyBindings']>) {
+    const button = overlay.querySelector<HTMLButtonElement>(`[data-action="bind-key"][data-binding="${binding}"]`);
+    if (button && pendingBinding !== binding) {
+      button.textContent = formatBinding(snapshot.settings.keyBindings[binding]);
+    }
+  }
+}
+
+function formatBinding(value: string): string {
+  if (!value) return '지정 안 됨';
+  if (value === ' ') return 'Space';
+  const arrows: Record<string, string> = { arrowleft: '←', arrowright: '→', arrowup: '↑', arrowdown: '↓' };
+  return arrows[value] ?? value.toUpperCase();
 }
 
 function statusFor(snapshot: GameSnapshot): string {
