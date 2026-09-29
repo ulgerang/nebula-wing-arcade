@@ -2,6 +2,10 @@
 
 Nebula Wing is a browser-only 2D arcade shooter built with TypeScript, Vite, and the HTML5 Canvas 2D API. The canvas uses a fixed 960×540 logical resolution and scales to a 16:9 desktop viewport.
 
+## Live demo
+
+Play the game on [GitHub Pages](https://ulgerang.github.io/nebula-wing-arcade/).
+
 ## Commands
 
 Use Node.js with npm or pnpm:
